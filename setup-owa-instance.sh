@@ -1,5 +1,7 @@
+# Author: Russell McLoughlin (russmcl@gmail.com)
 #
-#
+# launch small instance to do this config:
+# ec2-run-instances ami-1b814f72 --instance-type m1.small --region us-east-1 -z us-east-1c -k rmcl -g owa
 #
 #
 

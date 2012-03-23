@@ -7,26 +7,23 @@
 
 
 # Update apt-get sources and check for security updates.
-apt-get update
-apt-get upgrade –show-upgraded
-
-# Set the instance timezone
-dpkg-reconfigure tzdata
+yum update -y
 
 # Install Apache, PHP, MYSQL
-# This will prompt you to set the mysql root password
-apt-get install apache2 mysql-server php5 php5-dev php-pear php5-gd php5-mysql xfsprogs
+yum -y install emacs screen
+yum -y install gcc make
+yum -y install httpd mod_ssl
+yum -y install mysql-server mysql 
+yum -y install php php-dev php-pear php-gd php-mysql php-pcre
+yum -y install xfsprogs
+
+
+
 
 # Run the Mysql setup script
-mysql_secure_installation
 
+exit 1;
 
-
-# Setup MYSQL to use the EBS volume for storate
-
-# Attach the volume and create the filesystem
-# Assume we have attached the mysql EBS volume to /dev/sdh but it shows up in instances as /dev/xvdh
-mkfs.xfs /dev/xvdh
 
 
 # mount the volume to /data

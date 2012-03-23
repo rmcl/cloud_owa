@@ -9,9 +9,8 @@
 # Attach the volume and create the filesystem
 #
 
-# Assume we have attached the mysql EBS volume to /dev/sdh but it shows up in instances as /dev/sdh
+# Assume we have attached the mysql EBS volume to /dev/sdh
 mkfs.xfs /dev/sdh
-
 
 # mount the volume to /data
 mkdir /data
@@ -51,7 +50,6 @@ grant usage on *.* to owauser@localhost identified by 'Xa312u';
 grant all privileges on owa.* to owauser@localhost;
 
 MYSQLEXEC
-
 
 # Run the mysql secure script
 # This will prompt you to set the mysql root password

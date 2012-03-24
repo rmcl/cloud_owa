@@ -20,12 +20,6 @@ yum -y install xfsprogs
 
 
 
-# Run the Mysql setup script
-
-exit 1;
-
-
-
 # mount the volume to /data
 mkdir /data
 echo "/dev/xvdh /data xfs noatime 0 0" | sudo tee -a /etc/fstab
@@ -34,15 +28,17 @@ mount /data
 # Configure MySQL to store database on the new volume
 /etc/init.d/mysql stop
 
-mkdir /data/etc /data/lib /data/log
-mv /etc/mysql     /data/etc/
-mv /var/lib/mysql /data/lib/
-mv /var/log/mysql /data/log/
+# Remove default mysql directories
+rm -rf /etc/mysql
+rm -rf /var/lib/mysql
+rm -rf /var/log/mysql
 
+# Create empty directories in their place.
 mkdir /etc/mysql
 mkdir /var/lib/mysql
 mkdir /var/log/mysql
 
+# mount /data directories over the new directories
 echo "/data/etc/mysql /etc/mysql     none bind" | tee -a /etc/fstab
 mount /etc/mysql
 

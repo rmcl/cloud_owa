@@ -15,3 +15,5 @@ ls
 
 popd
 popd
+
+service httpd restart

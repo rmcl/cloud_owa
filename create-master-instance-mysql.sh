@@ -46,7 +46,7 @@ service mysqld start
 mysql -u root <<MYSQLEXEC
 
 create database owa;
-grant usage on *.* to owauser@localhost identified by 'Xa312u';
+grant usage on *.* to 'owauser'@'%' identified by 'Xa312u';
 grant all privileges on owa.* to owauser@localhost;
 
 MYSQLEXEC

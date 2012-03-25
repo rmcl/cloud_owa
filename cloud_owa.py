@@ -103,13 +103,15 @@ class CloudOwa(object):
                   placement=self.c.owa.ec2.avail_zon,
                   security_groups=[self.c.owa.ec2.security_group_name])
 
-        instance = res[0]
+        instance = res.instances[0]
+        
+        # Tag the instance as master 
+        con.create_tags([instance.id], {"Name": "owa-master"})
 
         logging.info('Attaching volume to master instance.')
 
         # Attach master volume as /dev/sdh
         vol.attach(instance.id, '/dev/sdh')
-
 
     def create_master_volume(self):
         '''Create master ebs volume'''
@@ -120,9 +122,7 @@ class CloudOwa(object):
             master_vol = self.con.create_volume(self.c.owa.master_vol_size, self.c.owa.ec2.avail_zon)
             con.create_tags(master_vol.id, {"Name": "owa-master-db"})
 
-
         return master_vol
-
 
     def create_security_group(self):
         '''create a security group for owa if it does not exist.'''

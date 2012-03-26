@@ -104,17 +104,12 @@ def install_base_packages():
     sudo('yum -y install php php-dev php-pear php-gd php-mysql php-pcre')
     sudo('yum -y install xfsprogs')
 
-
-
-
 @task
 def start_cluster():
     '''Start the cluster if it is not already running.'''
 
     master_inst = __get_master_inst__(create = False)
     
-    print master_inst
-
     if master_inst is not None:
         raise Exception, 'Cannot start Cloud OWA cluster because it is already running.'
         
@@ -127,22 +122,19 @@ def start_cluster():
 
     # Configure the master instance
     with settings(host_string=master_inst.public_dns_name):
-        run('uptime')
-        #configure_apache_php_owa()
-
-
+        configure_master()
 
     # Create load balancer
     lb = __get_load_balancer__()
     logging.info('Load balancer DNS: %s' % (lb.dns_name))
 
-
-    print inst
-
+    # Launch a slave.
+    launch_slave()
 
 @task
 def stop_cluster():
     # Terminate slaves, first persisting their local event logs to the master db
+    terminate_slave('all')
 
     # Terminate load balancer
     lb = self.get_load_balancer(create = False)
@@ -150,16 +142,59 @@ def stop_cluster():
         lb.delete()
 
     # Terminate master
-        pass
+    terminate_master()
 
 
 @task
-def stop_slave_instance():
-    # Create the instance
-    LOG.info('Stop slave instance.')
+def terminate_master():
+    LOG.info('terminating master instance.')
+    master_inst = __get_master_inst__(create = False)
+    if master_inst is None:
+        LOG.info('cannot terminate. not running.')
+
+    with settings(host_string=master_inst.public_dns_name):
+        # Process any events that may need processing.
+        sudo('php /opt/owa/cli.php cmd=processEventQueue source=database destination=database')
+
+        # Shut down mysqld cleanly.
+        sudo('service mysqld stop')
+
+    master_inst.terminate()
+
+
 
 @task
-def start_slave_instance():
+def terminate_slave(inst_id = None):
+
+    if inst_id == 'all':
+        #terminate all slaves.
+        insts = __get_inst_by_name__(env['owa.slave_name'], running = True)
+    elif inst_id is None:
+        # only terminate one instance
+        insts = __get_inst_by_name__(env['owa.slave_name'], running = True)
+        insts = [insts[0]]
+    else:
+        # get one instance specified as argument.
+        insts = ec2_con.get_all_instances(inst_id)
+
+    for inst in insts:
+        LOG.info('Stopping slave instance. %s' % (inst.id))
+
+        LOG.info('Removing from load balancer.')
+        lb = __get_load_balancer__(create = False)
+        lb.deregister_instances([inst.id])
+
+        LOG.info('Persisting OWA captured events to master.')
+        with settings(host_string=inst.public_dns_name):
+            sudo('php /opt/owa/cli.php cmd=processEventQueue source=file destination=database')
+
+        LOG.info('Persisting complete.')
+
+        inst.terminate()
+        LOG.info('Terminated instance %s' % (inst.id))
+
+@task
+def launch_slave():
     # Create the instance
     LOG.info('Creating new slave instance')
 
@@ -173,7 +208,7 @@ def start_slave_instance():
 
     instance = res.instances[0]
 
-    print instance.id
+    LOG.info('New instance launched %s' % (instance.id))
 
     # Tag the instance as master 
     ec2_con.create_tags([instance.id], {"Name": env['owa.slave_name']})
@@ -183,7 +218,7 @@ def start_slave_instance():
     __waitUntilStatus__(instance, 'running')
 
     # Configure apache, php, owa
-    LOG.info('boot complete. Configuring instance.')
+    LOG.info('Boot complete. Configuring instance.')
     with settings(host_string=instance.public_dns_name):
         install_base_packages() # Remove this when we replace custom AMI
         configure_slave()
@@ -245,7 +280,81 @@ date.timezone = "America/Los_Angeles"
     
     sudo('chown apache:apache /opt/owa/owa-config.php')
 
+    # Add largely static file that load balancer can ping for health check.
+    fabric.contrib.files.append('/opt/owa/health.php',
+                                owa_conf,
+                                use_sudo = True)
+    
+    sudo('chown apache:apache /opt/owa/health.php')
+
     sudo('service httpd restart')
+
+@task
+def configure_master_mysql():
+    '''Mount the attached EBS volume and configure the MySQL instance to use it.'''
+
+    # mount the volume to /data
+    sudo('mkdir /data')
+    sudo('echo "/dev/sdh /data xfs noatime 0 0" | sudo tee -a /etc/fstab')
+    sudo('mount /data')
+
+    # Configure MySQL to store database on the new volume
+    sudo('service mysqld stop')
+
+    # Remove default mysql directories
+    sudo('rm -rf /etc/mysql')
+    sudo('rm -rf /var/lib/mysql')
+    sudo('rm -rf /var/log/mysql')
+
+    # Create empty directories in their place.
+    sudo('mkdir /etc/mysql')
+    sudo('mkdir /var/lib/mysql')
+    sudo('mkdir /var/log/mysql')
+
+    # mount /data directories over the new directories
+    sudo('echo "/data/etc/mysql /etc/mysql     none bind" | tee -a /etc/fstab')
+    sudo('mount /etc/mysql')
+    sudo('echo "/data/lib/mysql /var/lib/mysql none bind" | tee -a /etc/fstab')
+    sudo('mount /var/lib/mysql')
+    sudo('echo "/data/log/mysql /var/log/mysql none bind" | tee -a /etc/fstab')
+    sudo('mount /var/log/mysql')
+
+    sudo('service mysqld start')
+
+    # Create my.cnf
+    myconf = '''
+[mysqld_safe]
+log-error=/var/log/mysqld.log
+pid-file=/var/run/mysqld/mysqld.pid
+
+[mysqld]
+datadir=/var/lib/mysql
+socket=/var/lib/mysql/mysql.sock
+user=mysql
+# Disabling symbolic-links is recommended to prevent assorted security risks
+symbolic-links=0
+port=3306
+'''
+    fabric.contrib.files.append('/etc/my.cnf', myconf, use_sudo = True)
+
+    # Get instance IP and set it as mysql bind address.
+    sudo('''echo "bind-address=`/sbin/ifconfig eth0 | grep 'inet addr:' | cut -d: -f2 | awk '{ print $1}'`" >> /etc/my.cnf''')
+
+
+
+@task
+def configure_master():
+    # Perform basic setup of Apache, PHP
+    configure_apache_php_owa()
+
+    # Setup the MySQL instance.
+    configure_master_mysql()
+
+    # Add a cron task to process event queue
+    cron_line = "3,8,13,18,23,28,33,38,43,48,53,58 * * * * php /opt/owa/cli.php cmd=processEventQueue source=database destination=database"
+    fabric.contrib.files.append('/tmp/apache_crontab', cron_line, use_sudo = True)
+    sudo('crontab -u apache /tmp/apache_crontab')
+
 
 @task
 def configure_slave():

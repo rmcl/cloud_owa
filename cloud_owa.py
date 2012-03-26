@@ -1,194 +1,193 @@
-'''
-Script to configure and launch Open Web Analytics cluster on EC2.
-Author: Russell McLoughlin (russmcl@gmail.com)
-
-
-commands:
-  start
-  stop
-
-  set_max_nodes
-
-'''
-import sys
-import argparse
 import logging
-from treedict import TreeDict
+from fabric.api import *
+from fabric.contrib.files import *
 import boto 
 from boto.ec2.elb import HealthCheck
 
-class CloudOwa(object):
+# Configure logging options.
+LOG = logging.getLogger(__name__)
+LOG_handler = logging.StreamHandler()
+LOG_formatter = logging.Formatter(fmt='%(asctime)s [%(funcName)s:%(lineno)03d] %(levelname)-5s: %(message)s',
+                                  datefmt='%m-%d-%Y %H:%M:%S')
+LOG_handler.setFormatter(LOG_formatter)
+LOG.addHandler(LOG_handler)
+LOG.setLevel(logging.INFO)
 
-    def __init__(self):
-        c = TreeDict()
-        c.owa.ec2.region = 'us-east-1'
-        c.owa.ec2.avail_zon = 'us-east-1c'
-        c.owa.ec2.security_group_name = 'owa'
-        c.owa.ec2.key_name = 'rmcl'
+# Default Config param
 
-        c.owa.master_name = 'owa-master'
-        c.owa.master_vol_name = 'owa-master-db'
+## Fabric Options
+env.key_filename = 'rmcl_cert.pem' #os.path.join(os.environ["HOME"], ".ssh/hstore.pem")
+env.user = 'ec2-user'
+env.disable_known_hosts = True
+env.no_agent = True
+env.port = 22
+
+ENV_DEFAULT = {
+    'ec2.avail_zon': 'us-east-1c',
+    'ec2.security_group_name': 'owa',
+    'ec2.key_name': 'rmcl',
+
+    'owa.master_inst_type': 't1.micro',
+    'owa.master_name': 'owa-master',
+    'owa.master_vol_name': 'owa-master-db',
+    'owa.lb_name': 'owa-lb',
+    'owa.master_vol_size': 1024
+    
+}
+
+# Allow user to specify config file to overide default config.
+has_rcfile = os.path.exists(env.rcfile)
+for k, v in ENV_DEFAULT.items():
+    if not k in env:
+        env[k] = v
+    if v:
+        t = type(v)
+        LOG.debug("%s [%s] => %s" % (k, t, env[k]))
+        env[k] = t(env[k])
+
+
+# Connect to EC2
+
+# AWS access key and AWS secret key are passed in to the method explicitly.
+# Alternatively, you can set the environment variables
+ec2_con = boto.connect_ec2()
+
+# Connect to EC2 Load Balancer end point
+ec2_lb_con = boto.connect_elb()
+
+
+
+@task
+def start_cluster():
+    '''Start the cluster if it is not already running.'''
+
+    master_inst = __get_master_inst__(create = False)
+    
+    print master_inst
+
+    if master_inst is not None:
+        raise Exception, 'Cannot start Cloud OWA cluster because it is already running.'
         
-        # Size in MB of the ebs volume
-        self.c.owa.master_vol_size = 1024
+    # Check if securit group exists, if not create it
+    sg = __get_security_group__()
+    print sg.rules
 
-        self.c = c
+    asdfd
 
-        # Connect to EC2 
-        # AWS access key and AWS secret key are passed in to the method explicitly.
-        # Alternatively, you can set the environment variables
-        self.con = boto.connect_ec2()
+    # Create master inst and attach ebs db volume
+    __get_master_inst__(create = True)
 
-        # Connect to EC2 Load Balancer end point
-        self.lb_con = boto.connect_elb()
-
-
-
-    def start(self):
-
-        # Determine if cluster is already running
-        master_inst = self.get_master_inst()
-        
-        if master_inst is not None:
-            raise Exception, 'Cannot start Cloud OWA cluster because it is already running.'
-        
-        # Check if securit group exists, if not create it
-        self.create_security_group()
-
-        # Create master inst and attach ebs db volume
-        self.create_master_inst()
-
-        # Create load balancer
-        self.create_load_balancer()
-
-        # Create auto-scaling group for slaves
-
-        
-        
-
-    def stop(self):
-
-        # Terminate slaves, first persisting their local event logs to the master db
-
-        # Terminate load balancer
-
-        # Terminate master
-        pass
+    # Create load balancer
+    lb = __get_load_balancer__()
+    logging.info('Load balancer DNS: %s' % (lb.dns_name))
 
 
-    def create_load_balancer(self):
-        '''Create a load balancer for owa slaves if it does not already exist.'''
+    print inst
 
-        # See if the load balancer for owa already exists
-        try:
-            self.lb_con.get_all_load_balancers('owa-lb')
-        except boto.exception.EC2ResponseError:
-            logging.info('Load balancer for OWA does not exist. Creating.')
-            # Load balancer does not exist
-            pass
+def __get_master_inst__(create = True):
+    '''
+    Return a reference to the master owa/db server instance.
+    If no master instance is running and create is False return None
+    Else create the instance and attach db ebs volume.
+    '''
+    insts = __get_inst_by_name__(env['owa.master_name'])
+    if len(insts) > 0:
+        return insts[0]
+    
 
-    def create_master_inst(self):
-        '''Create the master instance and attach master db volume to it.'''
-
-        # Check if master database volume exist, else create it
-        vol = self.create_master_volume()
-
-        logging.info('Creating master instance')
-
-        # Create the instance
-        # TODO(rmcl): CHANGE THIS TO USE OUR CUSTOM AMI WITH BASE DEPENDENCIES
-        res = con.run_instances('ami-1b814f72',
-                  key_name=self.c.owa.ec2.key_name,
-                  instance_type='m1.small',
-                  placement=self.c.owa.ec2.avail_zon,
-                  security_groups=[self.c.owa.ec2.security_group_name])
-
-        instance = res.instances[0]
-        
-        # Tag the instance as master 
-        con.create_tags([instance.id], {"Name": "owa-master"})
-
-        logging.info('Attaching volume to master instance.')
-
-        # Attach master volume as /dev/sdh
-        vol.attach(instance.id, '/dev/sdh')
-
-    def create_master_volume(self):
-        '''Create master ebs volume'''
-        master_vol = self.get_volume_by_name(self.c.owa.master_vol_name)
-        if master_vol == None:
-            logging.info('Master database volume does not exist; creating.')
-            
-            master_vol = self.con.create_volume(self.c.owa.master_vol_size, self.c.owa.ec2.avail_zon)
-            con.create_tags(master_vol.id, {"Name": "owa-master-db"})
-
-        return master_vol
-
-    def create_security_group(self):
-        '''create a security group for owa if it does not exist.'''
-        
-        try:
-            args = {'groupnames': [self.c.owa.ec2.security_group_name]}
-            security_group = self.con.get_all_security_groups(**args)[0]
-            print security_group.rules
-            return True
-
-        except boto.exception.EC2ResponseError:
-            # The group does not exist so we need to create it and authorize traffic
-            # on port 22, 80 from the internet and 3306 within the group.
-            logging.info('Security group does not exist. Creating.')
-
-            raise NotImplementedError, 'Must add code to create security group.'
-
-        return False
-
-    def get_master_inst(self):
-        '''
-        Return a reference to the master owa/db server instance.
-        If no master instance is running return None
-        '''
-        insts = self.get_inst_by_name(self.c.owa.master_name)
-        if len(insts) == 0:
-            return None
-        elif len(insts) == 1:
-            return insts[0]
-        else:
-            raise Exception, "Multiple OWA master nodes."
-
-    def get_inst_by_name(self, name):
-        '''Return a list of instances that match a specified tag name.'''
-        reservations = self.con.get_all_instances()
-        instances = [i for r in reservations for i in r.instances]
-        
-        insts = []
-        for i in instances:
-            if self.c.owa.master_name == i.tags['Name']:
-                insts.append(i)
-
-        return insts
-
-    def get_volume_by_name(self, name):
-        '''Return the volume that match a specified tag name or None.'''
-        for v in self.con.get_all_volumes():
-            if name == v.tags['Name']:
-                return v
-
+    # master instance does not exist
+    if create is False:
         return None
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Manage your cloud instance of Open Web Analytics.')
-    parser.add_argument('command', metavar='cmd', type=str,
-                        help='The command to run.')
+    # Check if master database volume exist, else create it
+    vol = self.get_master_volume()
 
-    args = parser.parse_args()
+    logging.info('Creating master instance')
 
-    co = CloudOwa()
-    if args.command == 'start':
-        #co.start()
-        print co.get_volume_by_name('owa-master-db')
+    # Create the instance
+    # TODO(rmcl): CHANGE THIS TO USE OUR CUSTOM AMI WITH BASE DEPENDENCIES
+    res = con.run_instances('ami-1b814f72',
+                            key_name=env['owa.ec2.key_name'],
+                            instance_type=env['owa.master_inst_type'],
+                            placement=env['ec2.avail_zon'],
+                            security_groups=[env['ec2.security_group_name']])
 
-    elif args.command == 'stop':
-        #co.stop()
-        pass
-    else:
-        raise Exception, 'Unknown command, %s.' % (args.command)
+    instance = res.instances[0]
+        
+    # Tag the instance as master 
+    con.create_tags([instance.id], {"Name": "owa-master"})
+
+    logging.info('Attaching volume to master instance.')
+
+    # Attach master volume as /dev/sdh
+    vol.attach(instance.id, '/dev/sdh')
+
+def __get_master_volume__(self):
+    '''Create master ebs volume'''
+    master_vol = self.get_volume_by_name(self.c.owa.master_vol_name)
+
+    if master_vol == None:
+        logging.info('Master database volume does not exist; creating.')
+            
+        master_vol = self.con.create_volume(env['owa.master_vol_size'], env['ec2.avail_zon'])
+        con.create_tags(master_vol.id, {"Name": "owa-master-db"})
+
+    return master_vol
+
+def __get_security_group__(self):
+    '''create a security group for owa if it does not exist.'''
+    
+    try:
+        args = {'groupnames': [self.c.owa.ec2.security_group_name]}
+        security_group = self.con.get_all_security_groups(**args)[0]
+        return security_group
+
+    except boto.exception.EC2ResponseError:
+        # The group does not exist so we need to create it and authorize traffic
+        # on port 22, 80 from the internet and 3306 within the group.
+        logging.info('Security group does not exist. Creating.')
+        
+        raise NotImplementedError, 'Must add code to create security group.'
+
+    return False
+
+def __get_load_balancer__(self, create = True):
+    '''
+    Return reference to load balancer. If it does not exist and create is
+    true, create a load balancer for owa slaves if it does not already exist.
+    '''
+
+    # See if the load balancer for owa already exists
+    try:
+        return self.lb_con.get_all_load_balancers(env['owa.lb_name'])[0]
+    except boto.exception.EC2ResponseError:
+        # Check arg to determine if we should create load balancer
+        if create is False:
+            return None
+
+        # Load balancer does not exist
+        logging.info('Load balancer for OWA does not exist. Creating.')
+        
+        hc = HealthCheck(interval=20,
+                         healthy_threshold=3,
+                         unhealthy_threshold=5,
+                         target='HTTP:80/')
+
+        regions = [env['ec2.avail_zon']]
+        ports = [(80, 'http'), (443, 8443, 'tcp')]
+        lb = conn.create_load_balancer(env['owa.lb_name'], regions, ports)
+        lb.configure_health_check(hc)
+        
+        return lb
+
+def __get_inst_by_name__(name):
+    '''Return a list of instances that match a specified tag name.'''
+    reservations = ec2_con.get_all_instances()
+    instances = [i for r in reservations for i in r.instances]
+    
+    insts = []
+    for i in instances:
+        if name == i.tags['Name']:
+            insts.append(i)
+            
+    return insts

@@ -41,13 +41,37 @@ mount /var/log/mysql
 # Start MySQL
 service mysqld start
 
+# Create my.cnf
+tee -a /etc/my.cnf <<MYSQLCONF
+
+[mysqld_safe]
+log-error=/var/log/mysqld.log
+pid-file=/var/run/mysqld/mysqld.pid
+
+[mysqld]
+datadir=/var/lib/mysql
+socket=/var/lib/mysql/mysql.sock
+user=mysql
+# Disabling symbolic-links is recommended to prevent assorted security risks
+symbolic-links=0
+
+port=3306
+
+MYSQLCONF
+
+# Get instance IP
+INST_IP_ADDRESS=`/sbin/ifconfig eth0 | grep 'inet addr:' | cut -d: -f2 | awk '{ print $1}'`
+
+echo "bind-address=$INST_IP_ADDRESS" >> /etc/my.cnf
+
+
 
 # Create a database for OWA and grante user "owauser" access.
 mysql -u root <<MYSQLEXEC
 
 create database owa;
 grant usage on *.* to 'owauser'@'%' identified by 'Xa312u';
-grant all privileges on owa.* to owauser@localhost;
+grant all privileges on owa.* to owauser@'%';
 
 MYSQLEXEC
 

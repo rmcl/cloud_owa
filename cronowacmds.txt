@@ -1,5 +1,0 @@
-master:
-php cli.php cmd=processEventQueue source=database destination=database
-
-slave:
-php cli.php cmd=processEventQueue source=file destination=database

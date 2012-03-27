@@ -1,13 +1,7 @@
 '''
 Script to configure and launch Open Web Analytics cluster on EC2.
+
 Author: Russell McLoughlin (russmcl@gmail.com)
-
-
-commands:
-  start
-  stop
-
-  set_max_nodes
 
 '''
 from __future__ import with_statement
@@ -53,7 +47,10 @@ ENV_DEFAULT = {
     'owa.master_vol_size': 1024,
 
     'ec2.reboot_wait_time': 20,    
-    'ec2.status_wait_time': 20
+    'ec2.status_wait_time': 20,
+
+    "ec2.access_key_id": os.getenv('AWS_ACCESS_KEY_ID'),
+    "ec2.secret_access_key": os.getenv('AWS_SECRET_ACCESS_KEY'),
 }
 
 # Allow user to specify config file to overide default config.
@@ -71,10 +68,12 @@ for k, v in ENV_DEFAULT.items():
 
 # AWS access key and AWS secret key are passed in to the method explicitly.
 # Alternatively, you can set the environment variables
-ec2_con = boto.connect_ec2()
+ec2_con = boto.connect_ec2(env["ec2.access_key_id"],
+                           env["ec2.secret_access_key"])
 
 # Connect to EC2 Load Balancer end point
-ec2_lb_con = boto.connect_elb()
+ec2_lb_con = boto.connect_elb(env["ec2.access_key_id"],
+                              env["ec2.secret_access_key"])
 
 @task
 def test():
@@ -104,7 +103,7 @@ def install_base_packages():
     sudo('yum -y install php php-dev php-pear php-gd php-mysql php-pcre')
     sudo('yum -y install xfsprogs')
     sudo('yum -y install python-devel')
-    sudo('easy_install fabric paramiko')
+    sudo('easy_install boto fabric paramiko')
 
 @task
 def start_cluster():

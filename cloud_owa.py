@@ -78,6 +78,12 @@ ec2_lb_con = boto.connect_elb(env["ec2.access_key_id"],
 
 @task
 def install_base_packages():
+    '''
+    Install packages required to run OWA and it's dependencies.
+
+    The custom AMI should contain all of these, but it should not
+    hurt to confirm they are installed.
+    '''
     sudo('yum update -y')
 
     sudo('yum -y install emacs screen git')
@@ -146,10 +152,15 @@ def terminate_master():
     master_inst.terminate()
 
 
-
 @task
 def terminate_slave(inst_id = None):
+    '''
+    Terminate one or more slave instance (OWA Event Recording Node).
 
+    :param inst_id: The instance id of the instance to terminate
+        OR 'all' to terminate all instance
+        OR None to terminate a single instance chosen arbitrarily.
+    '''
     if inst_id == 'all':
         #terminate all slaves.
         insts = __get_inst_by_name__(env['owa.slave_name'], running = True)

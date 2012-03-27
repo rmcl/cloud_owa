@@ -43,7 +43,7 @@ ENV_DEFAULT = {
     'ec2.avail_zon': 'us-east-1c',
     'ec2.security_group_name': 'owa',
     'ec2.key_name': 'rmcl',
-
+    'ec2.base_ami': 'ami-89a779e0', # amazon linux default is ami-1b814f72
     'owa.master_inst_type': 't1.micro',
     'owa.slave_inst_type': 't1.micro',
     'owa.slave_name': 'owa-slave',
@@ -97,12 +97,14 @@ def test():
 def install_base_packages():
     sudo('yum update -y')
 
-    sudo('yum -y install emacs screen')
+    sudo('yum -y install emacs screen git')
     sudo('yum -y install gcc make')
     sudo('yum -y install httpd mod_ssl')
     sudo('yum -y install mysql-server mysql')
     sudo('yum -y install php php-dev php-pear php-gd php-mysql php-pcre')
     sudo('yum -y install xfsprogs')
+    sudo('yum -y install python-devel')
+    sudo('easy_install fabric paramiko')
 
 @task
 def start_cluster():
@@ -199,8 +201,7 @@ def launch_slave():
     LOG.info('Creating new slave instance')
 
     # Create the instance
-    # TODO(rmcl): CHANGE THIS TO USE OUR CUSTOM AMI WITH BASE DEPENDENCIES
-    res = ec2_con.run_instances('ami-1b814f72',
+    res = ec2_con.run_instances(env['ec2.base_ami'],
                             key_name=env['ec2.key_name'],
                             instance_type=env['owa.slave_inst_type'],
                             placement=env['ec2.avail_zon'],
@@ -400,8 +401,7 @@ def __get_master_inst__(create = True):
     logging.info('Creating master instance')
 
     # Create the instance
-    # TODO(rmcl): CHANGE THIS TO USE OUR CUSTOM AMI WITH BASE DEPENDENCIES
-    res = con.run_instances('ami-1b814f72',
+    res = con.run_instances(env['ec2.base_ami'],
                             key_name=env['owa.ec2.key_name'],
                             instance_type=env['owa.master_inst_type'],
                             placement=env['ec2.avail_zon'],

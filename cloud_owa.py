@@ -75,22 +75,6 @@ ec2_con = boto.connect_ec2(env["ec2.access_key_id"],
 ec2_lb_con = boto.connect_elb(env["ec2.access_key_id"],
                               env["ec2.secret_access_key"])
 
-@task
-def test():
-    inst = __get_inst_by_name__('owa-testinst')[0]
-
-    __waitUntilStatus__(inst, 'running')
-
-    # Configure the master instance
-    with settings(host_string=inst.public_dns_name):
-        #install_base_packages()
-        #configure_slave()
-        pass
-
-    instance = inst
-
-    lb = __get_load_balancer__(create = False)
-    lb.register_instances([instance.id])
 
 @task
 def install_base_packages():
@@ -116,7 +100,6 @@ def start_cluster():
         
     # Check if securit group exists, if not create it
     sg = __get_security_group__()
-    print sg.rules
 
     # Create master inst and attach ebs db volume
     master_inst = __get_master_inst__(create = True)
@@ -127,7 +110,7 @@ def start_cluster():
 
     # Create load balancer
     lb = __get_load_balancer__()
-    logging.info('Load balancer DNS: %s' % (lb.dns_name))
+    LOG.info('Load balancer DNS: %s' % (lb.dns_name))
 
     # Launch a slave.
     launch_slave()
@@ -138,7 +121,7 @@ def stop_cluster():
     terminate_slave('all')
 
     # Terminate load balancer
-    lb = self.get_load_balancer(create = False)
+    lb = __get_load_balancer__(create = False)
     if lb is not None:
         lb.delete()
 
@@ -377,7 +360,9 @@ def configure_slave():
     fabric.contrib.files.append('/tmp/apache_crontab', cron_line, use_sudo = True)
     sudo('crontab -u apache /tmp/apache_crontab')
 
-
+@task
+def configure_load_balancer():
+    __get_load_balancer__()
 
 def __get_master_inst__(create = True):
     '''
@@ -395,51 +380,58 @@ def __get_master_inst__(create = True):
         return None
 
     # Check if master database volume exist, else create it
-    vol = self.get_master_volume()
+    vol = __get_master_volume__()
 
-    logging.info('Creating master instance')
+    LOG.info('Creating master instance')
 
     # Create the instance
-    res = con.run_instances(env['ec2.base_ami'],
-                            key_name=env['owa.ec2.key_name'],
-                            instance_type=env['owa.master_inst_type'],
-                            placement=env['ec2.avail_zon'],
-                            security_groups=[env['ec2.security_group_name']])
+    res = ec2_con.run_instances(env['ec2.base_ami'],
+                                key_name=env['ec2.key_name'],
+                                instance_type=env['owa.master_inst_type'],
+                                placement=env['ec2.avail_zon'],
+                                security_groups=[env['ec2.security_group_name']])
 
     instance = res.instances[0]
         
     # Tag the instance as master 
-    con.create_tags([instance.id], {"Name": "owa-master"})
+    ec2_con.create_tags([instance.id], {"Name": "owa-master"})
 
-    logging.info('Attaching volume to master instance.')
+    LOG.info('Waiting for master instance to enter "Running" state.')
+    __waitUntilStatus__(instance, 'running')
+
+    LOG.info('Attaching volume to master instance.')
 
     # Attach master volume as /dev/sdh
     vol.attach(instance.id, '/dev/sdh')
 
-def __get_master_volume__(self):
+    return instance
+
+def __get_master_volume__():
     '''Create master ebs volume'''
-    master_vol = self.get_volume_by_name(self.c.owa.master_vol_name)
+    master_vol = __get_volume_by_name__(env['owa.master_vol_name'])
 
     if master_vol == None:
-        logging.info('Master database volume does not exist; creating.')
+        LOG.info('Master database volume does not exist; creating.')
             
-        master_vol = self.con.create_volume(env['owa.master_vol_size'], env['ec2.avail_zon'])
+        master_vol = ec2_con.create_volume(env['owa.master_vol_size'],
+                                            env['ec2.avail_zon'])
+
         con.create_tags(master_vol.id, {"Name": "owa-master-db"})
 
     return master_vol
 
-def __get_security_group__(self):
+def __get_security_group__():
     '''create a security group for owa if it does not exist.'''
     
     try:
-        args = {'groupnames': [self.c.owa.ec2.security_group_name]}
-        security_group = self.con.get_all_security_groups(**args)[0]
+        args = {'groupnames': [env['ec2.security_group_name']]}
+        security_group = ec2_con.get_all_security_groups(**args)[0]
         return security_group
 
     except boto.exception.EC2ResponseError:
         # The group does not exist so we need to create it and authorize traffic
         # on port 22, 80 from the internet and 3306 within the group.
-        logging.info('Security group does not exist. Creating.')
+        LOG.info('Security group does not exist. Creating.')
         
         raise NotImplementedError, 'Must add code to create security group.'
 
@@ -454,7 +446,7 @@ def __get_load_balancer__(create = True):
     # See if the load balancer for owa already exists
     try:
         return ec2_lb_con.get_all_load_balancers(env['owa.lb_name'])[0]
-    except boto.exception.EC2ResponseError:
+    except boto.exception.BotoServerError:
         # Check arg to determine if we should create load balancer
         if create is False:
             return None
@@ -465,14 +457,24 @@ def __get_load_balancer__(create = True):
         hc = HealthCheck(interval=20,
                          healthy_threshold=3,
                          unhealthy_threshold=5,
-                         target='HTTP:80/')
+                         target='HTTP:80/health.php')
 
         regions = [env['ec2.avail_zon']]
-        ports = [(80, 'http'), (443, 8443, 'tcp')]
+        ports = [(80, 80, 'http'), (443, 443, 'tcp')]
         lb = ec2_lb_con.create_load_balancer(env['owa.lb_name'], regions, ports)
         lb.configure_health_check(hc)
         
         return lb
+
+def __get_volume_by_name__(name):
+    '''Return the volume that match a specified tag name or None.'''
+    for v in ec2_con.get_all_volumes():
+        try:
+            if name == v.tags['Name']:
+                return v    
+        except KeyError:
+            pass
+    return None
 
 def __get_inst_by_name__(name, running = True):
     '''
@@ -484,11 +486,14 @@ def __get_inst_by_name__(name, running = True):
     
     insts = []
     for i in instances:
-        if name == i.tags['Name']:
-            # If running is true only return running instances.
-            if not running or i.update() == 'running':
-                insts.append(i)
-            
+        try:
+            if name == i.tags['Name']:
+                # If running is true only return running instances.
+                if not running or i.update() == 'running':
+                    insts.append(i)
+        except KeyError:
+            pass
+
     return insts
 
 def __waitUntilStatus__(inst, status):
@@ -497,7 +502,7 @@ def __waitUntilStatus__(inst, status):
         time.sleep(env["ec2.status_wait_time"])
         tries -= 1
     if tries == 0:
-        logging.error("Last '%s' status: %s" % (__getInstanceName__(inst), inst.update()))
+        LOG.error("Last '%s' status: %s" % (__getInstanceName__(inst), inst.update()))
         raise Exception("Timed out waiting for %s to get to status '%s'" % (__getInstanceName__(inst), status))
     
     ## Just because it's running doesn't mean it's ready

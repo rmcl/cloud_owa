@@ -96,7 +96,7 @@ def install_base_packages():
     sudo('easy_install boto fabric paramiko')
 
 @task
-def start_cluster():
+def launch_cluster():
     '''Start the cluster if it is not already running.'''
 
     master_inst = __get_master_inst__(create = False)
@@ -122,7 +122,7 @@ def start_cluster():
     launch_slave()
 
 @task
-def stop_cluster():
+def terminate_cluster():
     # Terminate slaves, first persisting their local event logs to the master db
     terminate_slave('all')
 

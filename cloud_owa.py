@@ -37,9 +37,9 @@ ENV_DEFAULT = {
     'ec2.avail_zon': 'us-east-1c',
     'ec2.security_group_name': 'owa',
     'ec2.key_name': 'rmcl',
-    'ec2.base_ami': 'ami-89a779e0', # amazon linux default is ami-1b814f72
-    'owa.master_inst_type': 't1.micro',
-    'owa.slave_inst_type': 't1.micro',
+    'ec2.base_ami': 'ami-1fc11f76', # amazon linux default is ami-1b814f72
+    'owa.master_inst_type': 'm1.large',
+    'owa.slave_inst_type': 'm1.medium',
     'owa.slave_name': 'owa-slave',
     'owa.master_name': 'owa-master',
     'owa.master_vol_name': 'owa-master-db',
@@ -121,8 +121,15 @@ def launch_cluster():
     # Launch a slave.
     launch_slave()
 
+    LOG.info('Load balancer DNS: %s' % (lb.dns_name))
+
 @task
 def terminate_cluster():
+    '''
+    Terminate all instances in the cluster including the master. First persist
+    all captured events on slaves to master db.
+    '''
+
     # Terminate slaves, first persisting their local event logs to the master db
     terminate_slave('all')
 
@@ -135,8 +142,8 @@ def terminate_cluster():
     terminate_master()
 
 
-@task
 def terminate_master():
+    '''Terminate the master instance.'''
     LOG.info('terminating master instance.')
     master_inst = __get_master_inst__(create = False)
     if master_inst is None:
@@ -177,7 +184,12 @@ def terminate_slave(inst_id = None):
 
         LOG.info('Removing from load balancer.')
         lb = __get_load_balancer__(create = False)
-        lb.deregister_instances([inst.id])
+        try:
+            lb.deregister_instances([inst.id])
+        except boto.exception.BotoServerError:
+            # If the instance launch got botched, then the instance may not be
+            # attached to the load balancer.
+            pass
 
         LOG.info('Persisting OWA captured events to master.')
         with settings(host_string=inst.public_dns_name):
@@ -190,6 +202,8 @@ def terminate_slave(inst_id = None):
 
 @task
 def launch_slave():
+    '''Launch an OWA Event Recording Node.'''
+
     # Create the instance
     LOG.info('Creating new slave instance')
 
@@ -222,7 +236,6 @@ def launch_slave():
     lb = __get_load_balancer__(create = False)
     lb.register_instances([instance.id])
 
-@task
 def configure_apache_php_owa():
     '''Connect to an instance and set apache, php and owa configuration options.'''
 
@@ -281,9 +294,9 @@ date.timezone = "America/Los_Angeles"
     
     sudo('chown apache:apache /opt/owa/health.php')
 
+
     sudo('service httpd restart')
 
-@task
 def configure_master_mysql():
     '''Mount the attached EBS volume and configure the MySQL instance to use it.'''
 
@@ -336,7 +349,7 @@ port=3306
 
 
 
-@task
+
 def configure_master():
     # Perform basic setup of Apache, PHP
     configure_apache_php_owa()
@@ -344,23 +357,35 @@ def configure_master():
     # Setup the MySQL instance.
     configure_master_mysql()
 
+    master_inst = __get_master_inst__(create = False)
+
+    owa_master_conf = '''
+    define('OWA_PUBLIC_URL', 'http://%s/'); 
+    ''' % (master_inst.public_dns_name)
+
+    fabric.contrib.files.append('/opt/owa/owa-config.php',
+                                owa_master_conf,
+                                use_sudo = True)
+
     # Add a cron task to process event queue
     cron_line = "3,8,13,18,23,28,33,38,43,48,53,58 * * * * php /opt/owa/cli.php cmd=processEventQueue source=database destination=database"
     fabric.contrib.files.append('/tmp/apache_crontab', cron_line, use_sudo = True)
     sudo('crontab -u apache /tmp/apache_crontab')
 
 
-@task
 def configure_slave():
 
     # Perform basic setup of Apache, PHP
     configure_apache_php_owa()
 
+    lb =  __get_load_balancer__(create = False)
+
     # Append slave specific OWA config
     owa_slave_conf = '''
     define('OWA_QUEUE_EVENTS', true);
     define('OWA_EVENT_QUEUE_TYPE', 'file');
-    '''
+    define('OWA_PUBLIC_URL', 'http://%s/'); 
+    ''' % (lb.dns_name)
 
     fabric.contrib.files.append('/opt/owa/owa-config.php',
                                 owa_slave_conf,
@@ -370,10 +395,6 @@ def configure_slave():
     cron_line = "0,5,10,15,20,25,30,35,40,45,50,55 * * * * php /opt/owa/cli.php cmd=processEventQueue source=file destination=database"
     fabric.contrib.files.append('/tmp/apache_crontab', cron_line, use_sudo = True)
     sudo('crontab -u apache /tmp/apache_crontab')
-
-@task
-def configure_load_balancer():
-    __get_load_balancer__()
 
 def __get_master_inst__(create = True):
     '''

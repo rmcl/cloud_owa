@@ -426,7 +426,7 @@ def __get_master_inst__(create = True):
     instance = res.instances[0]
         
     # Tag the instance as master 
-    ec2_con.create_tags([instance.id], {"Name": "owa-master"})
+    ec2_con.create_tags([instance.id], {"Name": env['owa.master_name']})
 
     LOG.info('Waiting for master instance to enter "Running" state.')
     __waitUntilStatus__(instance, 'running')
@@ -448,7 +448,7 @@ def __get_master_volume__():
         master_vol = ec2_con.create_volume(env['owa.master_vol_size'],
                                             env['ec2.avail_zon'])
 
-        con.create_tags(master_vol.id, {"Name": "owa-master-db"})
+        ec2_con.create_tags(master_vol.id, {"Name": env['owa.master_vol_name']})
 
     return master_vol
 
